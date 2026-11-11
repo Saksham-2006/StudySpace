@@ -1,14 +1,11 @@
 -- ========================================================================
--- SEAT TO STUDY — COMPREHENSIVE PRODUCTION DATABASE SCHEMA & MIGRATION
--- Run this in Supabase Dashboard -> SQL Editor -> New Query -> Run
+-- SEAT TO STUDY — CORRECTIVE SECURITY & DATABASE INTEGRITY MIGRATION
+-- Migration ID: 20261112010000_security_and_integrity_fixes.sql
+-- Applies hardened RLS, composite constraints, and secured RPCs to an
+-- existing Seat to Study database without losing existing user records.
 -- ========================================================================
 
--- 1. EXTENSIONS
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-CREATE EXTENSION IF NOT EXISTS "btree_gist";
-
--- 2. HELPER FUNCTION: IS_ADMIN
--- Defined early so triggers and RLS policies can reference it safely
+-- 1. SECURE HELPER FUNCTION (NO RECURSION)
 CREATE OR REPLACE FUNCTION public.is_admin()
 RETURNS boolean
 LANGUAGE sql
@@ -22,18 +19,7 @@ AS $$
   );
 $$;
 
--- 3. PROFILES TABLE & SECURITY TRIGGERS
-CREATE TABLE IF NOT EXISTS public.profiles (
-  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
-  full_name TEXT,
-  email TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'student' CHECK (role IN ('student', 'admin')),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- Trigger: Automatically create or update profile on user signup
--- Enforces that all new signups default to 'student' to prevent privilege escalation
+-- 2. HARDEN USER REGISTRATION & PROFILE INTEGRITY
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -56,12 +42,6 @@ BEGIN
 END;
 $$;
 
-DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
-CREATE TRIGGER on_auth_user_created
-  AFTER INSERT ON auth.users
-  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
-
--- Trigger: Protect role, email, and id from unauthorized modification
 CREATE OR REPLACE FUNCTION public.handle_profile_update()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -89,67 +69,78 @@ CREATE TRIGGER on_profile_update
   BEFORE UPDATE ON public.profiles
   FOR EACH ROW EXECUTE FUNCTION public.handle_profile_update();
 
--- 4. BUILDINGS TABLE
-CREATE TABLE IF NOT EXISTS public.buildings (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  name TEXT NOT NULL,
-  description TEXT,
-  location TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT buildings_name_unique UNIQUE (name)
-);
+-- Drop recursive update policy on profiles and replace with safe policy
+DROP POLICY IF EXISTS "Users can update their own profile name" ON public.profiles;
+DROP POLICY IF EXISTS "Users can update their own profile" ON public.profiles;
+CREATE POLICY "Users can update their own profile"
+  ON public.profiles FOR UPDATE
+  USING (auth.uid() = id OR public.is_admin())
+  WITH CHECK (auth.uid() = id OR public.is_admin());
 
--- 5. ZONES TABLE
-CREATE TABLE IF NOT EXISTS public.zones (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  building_id UUID NOT NULL REFERENCES public.buildings(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  floor_number INT NOT NULL DEFAULT 1,
-  description TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT zones_building_name_unique UNIQUE (building_id, name),
-  CONSTRAINT zones_id_building_id_unique UNIQUE (id, building_id)
-);
+-- 3. ADD DATABASE INTEGRITY CONSTRAINTS
+-- A. Buildings unique name
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'buildings_name_unique'
+  ) THEN
+    ALTER TABLE public.buildings ADD CONSTRAINT buildings_name_unique UNIQUE (name);
+  END IF;
+END $$;
 
--- 6. SPACES TABLE
-CREATE TABLE IF NOT EXISTS public.spaces (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  building_id UUID REFERENCES public.buildings(id) ON DELETE SET NULL,
-  zone_id UUID REFERENCES public.zones(id) ON DELETE SET NULL,
-  name TEXT NOT NULL,
-  description TEXT,
-  space_type TEXT NOT NULL CHECK (space_type IN ('Library', 'Quiet Zone', 'Group Room', 'Computer Lab', 'Individual Desk', 'Collaborative Zone')),
-  capacity INT NOT NULL DEFAULT 1 CHECK (capacity >= 1),
-  image_url TEXT,
-  opening_time TIME NOT NULL DEFAULT '08:00:00',
-  closing_time TIME NOT NULL DEFAULT '22:00:00',
-  status TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'maintenance', 'closed')),
-  facilities TEXT[] NOT NULL DEFAULT '{}',
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT spaces_name_unique UNIQUE (name),
-  CONSTRAINT spaces_valid_hours CHECK (closing_time > opening_time),
-  CONSTRAINT fk_spaces_zone_building FOREIGN KEY (zone_id, building_id) REFERENCES public.zones(id, building_id) ON DELETE SET NULL
-);
+-- B. Zones composite unique constraint
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'zones_building_name_unique'
+  ) THEN
+    ALTER TABLE public.zones ADD CONSTRAINT zones_building_name_unique UNIQUE (building_id, name);
+  END IF;
 
--- 7. SEATS TABLE
-CREATE TABLE IF NOT EXISTS public.seats (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  space_id UUID NOT NULL REFERENCES public.spaces(id) ON DELETE CASCADE,
-  seat_number TEXT NOT NULL,
-  seat_type TEXT NOT NULL DEFAULT 'standard' CHECK (seat_type IN ('standard', 'standing', 'window', 'power_accessible', 'group')),
-  status TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available', 'maintenance', 'blocked')),
-  row_label TEXT,
-  column_number INT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT seats_space_seat_number_unique UNIQUE (space_id, seat_number),
-  CONSTRAINT seats_id_space_id_unique UNIQUE (id, space_id)
-);
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'zones_id_building_id_unique'
+  ) THEN
+    ALTER TABLE public.zones ADD CONSTRAINT zones_id_building_id_unique UNIQUE (id, building_id);
+  END IF;
+END $$;
 
--- Capacity verification trigger: ensure seats count does not exceed space capacity
+-- C. Spaces integrity constraints
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'spaces_name_unique'
+  ) THEN
+    ALTER TABLE public.spaces ADD CONSTRAINT spaces_name_unique UNIQUE (name);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'spaces_valid_hours'
+  ) THEN
+    ALTER TABLE public.spaces ADD CONSTRAINT spaces_valid_hours CHECK (closing_time > opening_time);
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_spaces_zone_building'
+  ) THEN
+    ALTER TABLE public.spaces
+    ADD CONSTRAINT fk_spaces_zone_building
+    FOREIGN KEY (zone_id, building_id)
+    REFERENCES public.zones(id, building_id)
+    ON DELETE SET NULL;
+  END IF;
+END $$;
+
+-- D. Seats composite unique constraint
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'seats_id_space_id_unique'
+  ) THEN
+    ALTER TABLE public.seats ADD CONSTRAINT seats_id_space_id_unique UNIQUE (id, space_id);
+  END IF;
+END $$;
+
+-- E. Seat capacity check trigger
 CREATE OR REPLACE FUNCTION public.check_space_seat_capacity()
 RETURNS trigger
 LANGUAGE plpgsql
@@ -176,127 +167,27 @@ CREATE TRIGGER trg_check_seat_capacity
   BEFORE INSERT ON public.seats
   FOR EACH ROW EXECUTE FUNCTION public.check_space_seat_capacity();
 
--- 8. USAGE RULES TABLE
-CREATE TABLE IF NOT EXISTS public.usage_rules (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  space_id UUID REFERENCES public.spaces(id) ON DELETE CASCADE UNIQUE,
-  max_booking_duration_minutes INT NOT NULL DEFAULT 240, -- 4 hours
-  advance_booking_limit_days INT NOT NULL DEFAULT 7,      -- 7 days in advance
-  cancellation_limit_minutes INT NOT NULL DEFAULT 15,     -- Up to 15m before start
-  check_in_window_minutes INT NOT NULL DEFAULT 15,        -- Within 15m of start
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-
--- 9. BOOKINGS TABLE
-CREATE TABLE IF NOT EXISTS public.bookings (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-  seat_id UUID NOT NULL REFERENCES public.seats(id) ON DELETE CASCADE,
-  space_id UUID NOT NULL REFERENCES public.spaces(id) ON DELETE CASCADE,
-  start_at TIMESTAMPTZ NOT NULL,
-  end_at TIMESTAMPTZ NOT NULL,
-  status TEXT NOT NULL DEFAULT 'confirmed' CHECK (status IN ('confirmed', 'checked_in', 'completed', 'cancelled', 'no_show', 'expired')),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  CONSTRAINT valid_booking_interval CHECK (end_at > start_at),
-  CONSTRAINT fk_bookings_seat_space FOREIGN KEY (seat_id, space_id) REFERENCES public.seats(id, space_id) ON DELETE CASCADE
-);
-
--- Double booking exclusion constraint using btree_gist
+-- F. Bookings composite foreign key ensuring seat belongs to space
 DO $$
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint WHERE conname = 'no_overlapping_active_bookings'
+    SELECT 1 FROM pg_constraint WHERE conname = 'fk_bookings_seat_space'
   ) THEN
     ALTER TABLE public.bookings
-    ADD CONSTRAINT no_overlapping_active_bookings
-    EXCLUDE USING gist (
-      seat_id WITH =,
-      tstzrange(start_at, end_at, '[)') WITH &&
-    ) WHERE (status IN ('confirmed', 'checked_in'));
+    ADD CONSTRAINT fk_bookings_seat_space
+    FOREIGN KEY (seat_id, space_id)
+    REFERENCES public.seats(id, space_id)
+    ON DELETE CASCADE;
   END IF;
 END $$;
 
--- 10. OCCUPANCY LOGS TABLE
-CREATE TABLE IF NOT EXISTS public.occupancy_logs (
-  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  seat_id UUID NOT NULL REFERENCES public.seats(id) ON DELETE CASCADE,
-  user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
-  booking_id UUID REFERENCES public.bookings(id) ON DELETE SET NULL,
-  event_type TEXT NOT NULL CHECK (event_type IN ('check_in', 'check_out', 'auto_checkout', 'no_show_cancellation', 'manual_override', 'cancellation')),
-  occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  metadata JSONB DEFAULT '{}'::jsonb
-);
+-- G. Occupancy logs check constraint update to include 'cancellation'
+ALTER TABLE public.occupancy_logs DROP CONSTRAINT IF EXISTS occupancy_logs_event_type_check;
+ALTER TABLE public.occupancy_logs ADD CONSTRAINT occupancy_logs_event_type_check
+  CHECK (event_type IN ('check_in', 'check_out', 'auto_checkout', 'no_show_cancellation', 'manual_override', 'cancellation'));
 
--- 11. INDEXES FOR PERFORMANCE
-CREATE INDEX IF NOT EXISTS idx_spaces_building ON public.spaces(building_id);
-CREATE INDEX IF NOT EXISTS idx_spaces_zone ON public.spaces(zone_id);
-CREATE INDEX IF NOT EXISTS idx_seats_space ON public.seats(space_id);
-CREATE INDEX IF NOT EXISTS idx_bookings_user ON public.bookings(user_id);
-CREATE INDEX IF NOT EXISTS idx_bookings_seat ON public.bookings(seat_id);
-CREATE INDEX IF NOT EXISTS idx_bookings_space ON public.bookings(space_id);
-CREATE INDEX IF NOT EXISTS idx_bookings_interval ON public.bookings(start_at, end_at);
-CREATE INDEX IF NOT EXISTS idx_bookings_status ON public.bookings(status);
-CREATE INDEX IF NOT EXISTS idx_occupancy_logs_booking ON public.occupancy_logs(booking_id);
-CREATE INDEX IF NOT EXISTS idx_occupancy_logs_seat ON public.occupancy_logs(seat_id);
-
--- 12. ROW LEVEL SECURITY (RLS) POLICIES
-ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.buildings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.zones ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.spaces ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.seats ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.usage_rules ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.bookings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.occupancy_logs ENABLE ROW LEVEL SECURITY;
-
--- Profiles Policies (Non-recursive)
-DROP POLICY IF EXISTS "Profiles are readable by owner and admins" ON public.profiles;
-CREATE POLICY "Profiles are readable by owner and admins"
-  ON public.profiles FOR SELECT
-  USING (auth.uid() = id OR public.is_admin());
-
-DROP POLICY IF EXISTS "Users can update their own profile name" ON public.profiles;
-DROP POLICY IF EXISTS "Users can update their own profile" ON public.profiles;
-CREATE POLICY "Users can update their own profile"
-  ON public.profiles FOR UPDATE
-  USING (auth.uid() = id OR public.is_admin())
-  WITH CHECK (auth.uid() = id OR public.is_admin());
-
--- Public Read Catalog Policies (Buildings, Zones, Spaces, Seats, Usage Rules)
-DROP POLICY IF EXISTS "Public read buildings" ON public.buildings;
-CREATE POLICY "Public read buildings" ON public.buildings FOR SELECT USING (true);
-
-DROP POLICY IF EXISTS "Admin write buildings" ON public.buildings;
-CREATE POLICY "Admin write buildings" ON public.buildings FOR ALL USING (public.is_admin());
-
-DROP POLICY IF EXISTS "Public read zones" ON public.zones;
-CREATE POLICY "Public read zones" ON public.zones FOR SELECT USING (true);
-
-DROP POLICY IF EXISTS "Admin write zones" ON public.zones;
-CREATE POLICY "Admin write zones" ON public.zones FOR ALL USING (public.is_admin());
-
-DROP POLICY IF EXISTS "Public read spaces" ON public.spaces;
-CREATE POLICY "Public read spaces" ON public.spaces FOR SELECT USING (true);
-
-DROP POLICY IF EXISTS "Admin write spaces" ON public.spaces;
-CREATE POLICY "Admin write spaces" ON public.spaces FOR ALL USING (public.is_admin());
-
-DROP POLICY IF EXISTS "Public read seats" ON public.seats;
-CREATE POLICY "Public read seats" ON public.seats FOR SELECT USING (true);
-
-DROP POLICY IF EXISTS "Admin write seats" ON public.seats;
-CREATE POLICY "Admin write seats" ON public.seats FOR ALL USING (public.is_admin());
-
-DROP POLICY IF EXISTS "Public read usage rules" ON public.usage_rules;
-CREATE POLICY "Public read usage rules" ON public.usage_rules FOR SELECT USING (true);
-
-DROP POLICY IF EXISTS "Admin write usage rules" ON public.usage_rules;
-CREATE POLICY "Admin write usage rules" ON public.usage_rules FOR ALL USING (public.is_admin());
-
--- Bookings Policies:
--- 1) SELECT: Users view their own bookings, admins view all, or anyone views active confirmed/checked_in intervals for live seat availability
+-- 4. HARDEN ROW LEVEL SECURITY POLICIES
+-- Bookings: Prevent direct student INSERT / UPDATE operations
 DROP POLICY IF EXISTS "Users view their own bookings or admins view all" ON public.bookings;
 DROP POLICY IF EXISTS "Bookings are viewable by owner, admins, or active seat reservations" ON public.bookings;
 CREATE POLICY "Bookings are viewable by owner, admins, or active seat reservations"
@@ -307,14 +198,12 @@ CREATE POLICY "Bookings are viewable by owner, admins, or active seat reservatio
     OR status IN ('confirmed', 'checked_in')
   );
 
--- 2) Direct INSERT blocked for non-admins (must use create_seat_booking RPC)
 DROP POLICY IF EXISTS "Authenticated users create their own bookings" ON public.bookings;
 DROP POLICY IF EXISTS "Admins can insert bookings directly" ON public.bookings;
 CREATE POLICY "Admins can insert bookings directly"
   ON public.bookings FOR INSERT
   WITH CHECK (public.is_admin());
 
--- 3) Direct UPDATE blocked for non-admins (must use lifecycle RPCs)
 DROP POLICY IF EXISTS "Users can update own bookings or admins manage" ON public.bookings;
 DROP POLICY IF EXISTS "Admins can update bookings directly" ON public.bookings;
 CREATE POLICY "Admins can update bookings directly"
@@ -322,33 +211,24 @@ CREATE POLICY "Admins can update bookings directly"
   USING (public.is_admin())
   WITH CHECK (public.is_admin());
 
--- 4) Direct DELETE restricted to admins
 DROP POLICY IF EXISTS "Admins can delete bookings" ON public.bookings;
 CREATE POLICY "Admins can delete bookings"
   ON public.bookings FOR DELETE
   USING (public.is_admin());
 
--- Occupancy Logs Policies:
--- 1) SELECT: Users view own occupancy events, admins view all
-DROP POLICY IF EXISTS "Users view own occupancy or admins view all" ON public.occupancy_logs;
-CREATE POLICY "Users view own occupancy or admins view all"
-  ON public.occupancy_logs FOR SELECT
-  USING (auth.uid() = user_id OR public.is_admin());
-
--- 2) Direct INSERT blocked for non-admins (only trusted RPCs or admins)
+-- Occupancy Logs: Prevent direct student INSERT operations
 DROP POLICY IF EXISTS "Allow authenticated create occupancy logs" ON public.occupancy_logs;
 DROP POLICY IF EXISTS "Admins can insert occupancy logs directly" ON public.occupancy_logs;
 CREATE POLICY "Admins can insert occupancy logs directly"
   ON public.occupancy_logs FOR INSERT
   WITH CHECK (public.is_admin());
 
--- 3) Management restricted to admins
 DROP POLICY IF EXISTS "Admins can manage occupancy logs" ON public.occupancy_logs;
 CREATE POLICY "Admins can manage occupancy logs"
   ON public.occupancy_logs FOR ALL
   USING (public.is_admin());
 
--- 13. STORED PROCEDURES / SECURE RPC FUNCTIONS
+-- 5. SECURED STORED PROCEDURES / RPC FUNCTIONS
 
 -- A. Atomic Seat Booking Procedure
 CREATE OR REPLACE FUNCTION public.create_seat_booking(
@@ -754,7 +634,7 @@ BEGIN
 END;
 $$;
 
--- 14. EXECUTION PERMISSIONS
+-- 6. EXECUTION PERMISSIONS
 REVOKE EXECUTE ON FUNCTION public.is_admin() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.is_admin() TO authenticated, service_role;
 
@@ -779,305 +659,3 @@ GRANT EXECUTE ON FUNCTION public.check_out_booking(UUID) TO authenticated, servi
 REVOKE EXECUTE ON FUNCTION public.cancel_booking(UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.cancel_booking(UUID) TO authenticated, service_role;
 
--- 15. IDEMPOTENT INITIAL CAMPUS DATA SEED
-DO $$
-DECLARE
-  b_acad UUID;
-  b_tech UUID;
-  b_lib  UUID;
-  b_stud UUID;
-  b_inno UUID;
-
-  z_acad_g UUID;
-  z_acad_2 UUID;
-  z_lib_2  UUID;
-  z_inno_1 UUID;
-  z_tech_3 UUID;
-  z_stud_1 UUID;
-
-  s1 UUID;
-  s2 UUID;
-  s3 UUID;
-  s4 UUID;
-  s5 UUID;
-  s6 UUID;
-
-  i INT;
-BEGIN
-  -- Insert or update Buildings
-  INSERT INTO public.buildings (name, description, location)
-  VALUES ('Academic Block', 'Main university academic complex', 'North Campus · Zone A')
-  ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description, location = EXCLUDED.location
-  RETURNING id INTO b_acad;
-
-  INSERT INTO public.buildings (name, description, location)
-  VALUES ('Technology Block', 'Engineering and Computer Science building', 'East Campus · Zone C')
-  ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description, location = EXCLUDED.location
-  RETURNING id INTO b_tech;
-
-  INSERT INTO public.buildings (name, description, location)
-  VALUES ('Central Library Building', 'Multi-level campus library and repository', 'Central Campus')
-  ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description, location = EXCLUDED.location
-  RETURNING id INTO b_lib;
-
-  INSERT INTO public.buildings (name, description, location)
-  VALUES ('Student Centre', 'Student recreation and independent study hub', 'South Campus')
-  ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description, location = EXCLUDED.location
-  RETURNING id INTO b_stud;
-
-  INSERT INTO public.buildings (name, description, location)
-  VALUES ('Innovation Block', 'Entrepreneurship, research and collaborative center', 'West Campus')
-  ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description, location = EXCLUDED.location
-  RETURNING id INTO b_inno;
-
-  -- Insert or update Zones
-  INSERT INTO public.zones (building_id, name, floor_number, description)
-  VALUES (b_acad, 'Ground Floor Commons', 0, 'Main concourse and study hall')
-  ON CONFLICT (building_id, name) DO UPDATE SET floor_number = EXCLUDED.floor_number, description = EXCLUDED.description
-  RETURNING id INTO z_acad_g;
-
-  INSERT INTO public.zones (building_id, name, floor_number, description)
-  VALUES (b_acad, 'Second Floor Wing B', 2, 'Research and seminar rooms')
-  ON CONFLICT (building_id, name) DO UPDATE SET floor_number = EXCLUDED.floor_number, description = EXCLUDED.description
-  RETURNING id INTO z_acad_2;
-
-  INSERT INTO public.zones (building_id, name, floor_number, description)
-  VALUES (b_lib, 'Second Floor Silent Wing', 2, 'Strictly silent reading zones')
-  ON CONFLICT (building_id, name) DO UPDATE SET floor_number = EXCLUDED.floor_number, description = EXCLUDED.description
-  RETURNING id INTO z_lib_2;
-
-  INSERT INTO public.zones (building_id, name, floor_number, description)
-  VALUES (b_inno, 'First Floor Labs', 1, 'Group collaboration pods and whiteboards')
-  ON CONFLICT (building_id, name) DO UPDATE SET floor_number = EXCLUDED.floor_number, description = EXCLUDED.description
-  RETURNING id INTO z_inno_1;
-
-  INSERT INTO public.zones (building_id, name, floor_number, description)
-  VALUES (b_tech, 'Third Floor Digital Labs', 3, 'High performance computing labs')
-  ON CONFLICT (building_id, name) DO UPDATE SET floor_number = EXCLUDED.floor_number, description = EXCLUDED.description
-  RETURNING id INTO z_tech_3;
-
-  INSERT INTO public.zones (building_id, name, floor_number, description)
-  VALUES (b_stud, 'First Floor Mezzanine', 1, 'Relaxed study desks with power access')
-  ON CONFLICT (building_id, name) DO UPDATE SET floor_number = EXCLUDED.floor_number, description = EXCLUDED.description
-  RETURNING id INTO z_stud_1;
-
-  -- Insert or update Study Spaces
-  INSERT INTO public.spaces (
-    building_id, zone_id, name, description, space_type, capacity, image_url,
-    opening_time, closing_time, status, facilities
-  ) VALUES (
-    b_acad, z_acad_g, 'Central Library',
-    'A spacious academic environment for focused individual study.',
-    'Library', 40,
-    'https://images.unsplash.com/photo-1507842217343-583bb7270b66',
-    '07:00:00', '23:00:00', 'available',
-    ARRAY['Wi-Fi', 'Charging', 'Silent zone']
-  ) ON CONFLICT (name) DO UPDATE SET
-    building_id = EXCLUDED.building_id,
-    zone_id = EXCLUDED.zone_id,
-    description = EXCLUDED.description,
-    space_type = EXCLUDED.space_type,
-    capacity = EXCLUDED.capacity,
-    image_url = EXCLUDED.image_url,
-    opening_time = EXCLUDED.opening_time,
-    closing_time = EXCLUDED.closing_time,
-    status = EXCLUDED.status,
-    facilities = EXCLUDED.facilities
-  RETURNING id INTO s1;
-
-  INSERT INTO public.spaces (
-    building_id, zone_id, name, description, space_type, capacity, image_url,
-    opening_time, closing_time, status, facilities
-  ) VALUES (
-    b_lib, z_lib_2, 'The Quiet Room',
-    'A peaceful environment for uninterrupted concentration.',
-    'Quiet Zone', 20,
-    'https://images.unsplash.com/photo-1497366754035-f200968a6e72',
-    '08:00:00', '22:00:00', 'available',
-    ARRAY['Wi-Fi', 'Silent zone']
-  ) ON CONFLICT (name) DO UPDATE SET
-    building_id = EXCLUDED.building_id,
-    zone_id = EXCLUDED.zone_id,
-    description = EXCLUDED.description,
-    space_type = EXCLUDED.space_type,
-    capacity = EXCLUDED.capacity,
-    image_url = EXCLUDED.image_url,
-    opening_time = EXCLUDED.opening_time,
-    closing_time = EXCLUDED.closing_time,
-    status = EXCLUDED.status,
-    facilities = EXCLUDED.facilities
-  RETURNING id INTO s2;
-
-  INSERT INTO public.spaces (
-    building_id, zone_id, name, description, space_type, capacity, image_url,
-    opening_time, closing_time, status, facilities
-  ) VALUES (
-    b_inno, z_inno_1, 'Collaboration Hub',
-    'A collaborative space for group discussions and projects.',
-    'Group Room', 8,
-    'https://images.unsplash.com/photo-1497366811353-6870744d04b2',
-    '08:00:00', '20:00:00', 'available',
-    ARRAY['Wi-Fi', 'Display', 'Whiteboard']
-  ) ON CONFLICT (name) DO UPDATE SET
-    building_id = EXCLUDED.building_id,
-    zone_id = EXCLUDED.zone_id,
-    description = EXCLUDED.description,
-    space_type = EXCLUDED.space_type,
-    capacity = EXCLUDED.capacity,
-    image_url = EXCLUDED.image_url,
-    opening_time = EXCLUDED.opening_time,
-    closing_time = EXCLUDED.closing_time,
-    status = EXCLUDED.status,
-    facilities = EXCLUDED.facilities
-  RETURNING id INTO s3;
-
-  INSERT INTO public.spaces (
-    building_id, zone_id, name, description, space_type, capacity, image_url,
-    opening_time, closing_time, status, facilities
-  ) VALUES (
-    b_tech, z_tech_3, 'Digital Workspace',
-    'A dedicated workspace equipped for digital learning.',
-    'Computer Lab', 30,
-    'https://images.unsplash.com/photo-1498050108023-c5249f4df085',
-    '08:00:00', '21:00:00', 'available',
-    ARRAY['Computers', 'Wi-Fi', 'Charging']
-  ) ON CONFLICT (name) DO UPDATE SET
-    building_id = EXCLUDED.building_id,
-    zone_id = EXCLUDED.zone_id,
-    description = EXCLUDED.description,
-    space_type = EXCLUDED.space_type,
-    capacity = EXCLUDED.capacity,
-    image_url = EXCLUDED.image_url,
-    opening_time = EXCLUDED.opening_time,
-    closing_time = EXCLUDED.closing_time,
-    status = EXCLUDED.status,
-    facilities = EXCLUDED.facilities
-  RETURNING id INTO s4;
-
-  INSERT INTO public.spaces (
-    building_id, zone_id, name, description, space_type, capacity, image_url,
-    opening_time, closing_time, status, facilities
-  ) VALUES (
-    b_stud, z_stud_1, 'Open Study Lounge',
-    'A comfortable space for independent study and reading.',
-    'Individual Desk', 24,
-    'https://images.unsplash.com/photo-1497366216548-37526070297c',
-    '06:00:00', '23:59:00', 'available',
-    ARRAY['Wi-Fi', 'Charging']
-  ) ON CONFLICT (name) DO UPDATE SET
-    building_id = EXCLUDED.building_id,
-    zone_id = EXCLUDED.zone_id,
-    description = EXCLUDED.description,
-    space_type = EXCLUDED.space_type,
-    capacity = EXCLUDED.capacity,
-    image_url = EXCLUDED.image_url,
-    opening_time = EXCLUDED.opening_time,
-    closing_time = EXCLUDED.closing_time,
-    status = EXCLUDED.status,
-    facilities = EXCLUDED.facilities
-  RETURNING id INTO s5;
-
-  INSERT INTO public.spaces (
-    building_id, zone_id, name, description, space_type, capacity, image_url,
-    opening_time, closing_time, status, facilities
-  ) VALUES (
-    b_acad, z_acad_2, 'Research Room',
-    'A smaller room suited to focused team research sessions.',
-    'Group Room', 6,
-    'https://images.unsplash.com/photo-1497366754035-f200968a6e72',
-    '08:00:00', '20:00:00', 'available',
-    ARRAY['Wi-Fi', 'Whiteboard']
-  ) ON CONFLICT (name) DO UPDATE SET
-    building_id = EXCLUDED.building_id,
-    zone_id = EXCLUDED.zone_id,
-    description = EXCLUDED.description,
-    space_type = EXCLUDED.space_type,
-    capacity = EXCLUDED.capacity,
-    image_url = EXCLUDED.image_url,
-    opening_time = EXCLUDED.opening_time,
-    closing_time = EXCLUDED.closing_time,
-    status = EXCLUDED.status,
-    facilities = EXCLUDED.facilities
-  RETURNING id INTO s6;
-
-  -- Insert or update Usage Rules
-  INSERT INTO public.usage_rules (space_id, max_booking_duration_minutes, advance_booking_limit_days, cancellation_limit_minutes, check_in_window_minutes)
-  VALUES
-    (s1, 240, 7, 15, 20),
-    (s2, 180, 5, 15, 20),
-    (s3, 120, 3, 30, 15),
-    (s4, 240, 7, 15, 20),
-    (s5, 300, 7, 15, 30),
-    (s6, 120, 3, 30, 15)
-  ON CONFLICT (space_id) DO UPDATE SET
-    max_booking_duration_minutes = EXCLUDED.max_booking_duration_minutes,
-    advance_booking_limit_days = EXCLUDED.advance_booking_limit_days,
-    cancellation_limit_minutes = EXCLUDED.cancellation_limit_minutes,
-    check_in_window_minutes = EXCLUDED.check_in_window_minutes;
-
-  -- Temporarily disable seat capacity trigger during idempotent seed insert
-  ALTER TABLE public.seats DISABLE TRIGGER trg_check_seat_capacity;
-
-  -- Populate Seats for Central Library (40 seats)
-  FOR i IN 1..40 LOOP
-    INSERT INTO public.seats (space_id, seat_number, seat_type, status, row_label, column_number)
-    VALUES (s1, 'S' || LPAD(i::TEXT, 2, '0'), 'standard', 'available', CHR(65 + ((i - 1) / 6)), ((i - 1) % 6) + 1)
-    ON CONFLICT (space_id, seat_number) DO UPDATE SET
-      seat_type = EXCLUDED.seat_type,
-      row_label = EXCLUDED.row_label,
-      column_number = EXCLUDED.column_number;
-  END LOOP;
-
-  -- Populate Seats for The Quiet Room (20 seats)
-  FOR i IN 1..20 LOOP
-    INSERT INTO public.seats (space_id, seat_number, seat_type, status, row_label, column_number)
-    VALUES (s2, 'S' || LPAD(i::TEXT, 2, '0'), CASE WHEN i <= 6 THEN 'window' ELSE 'standard' END, 'available', CHR(65 + ((i - 1) / 5)), ((i - 1) % 5) + 1)
-    ON CONFLICT (space_id, seat_number) DO UPDATE SET
-      seat_type = EXCLUDED.seat_type,
-      row_label = EXCLUDED.row_label,
-      column_number = EXCLUDED.column_number;
-  END LOOP;
-
-  -- Populate Seats for Collaboration Hub (8 seats)
-  FOR i IN 1..8 LOOP
-    INSERT INTO public.seats (space_id, seat_number, seat_type, status, row_label, column_number)
-    VALUES (s3, 'S' || LPAD(i::TEXT, 2, '0'), 'group', 'available', 'Table 1', i)
-    ON CONFLICT (space_id, seat_number) DO UPDATE SET
-      seat_type = EXCLUDED.seat_type,
-      row_label = EXCLUDED.row_label,
-      column_number = EXCLUDED.column_number;
-  END LOOP;
-
-  -- Populate Seats for Digital Workspace (30 seats)
-  FOR i IN 1..30 LOOP
-    INSERT INTO public.seats (space_id, seat_number, seat_type, status, row_label, column_number)
-    VALUES (s4, 'S' || LPAD(i::TEXT, 2, '0'), 'power_accessible', 'available', 'Bench ' || (((i - 1) / 6) + 1), ((i - 1) % 6) + 1)
-    ON CONFLICT (space_id, seat_number) DO UPDATE SET
-      seat_type = EXCLUDED.seat_type,
-      row_label = EXCLUDED.row_label,
-      column_number = EXCLUDED.column_number;
-  END LOOP;
-
-  -- Populate Seats for Open Study Lounge (24 seats)
-  FOR i IN 1..24 LOOP
-    INSERT INTO public.seats (space_id, seat_number, seat_type, status, row_label, column_number)
-    VALUES (s5, 'S' || LPAD(i::TEXT, 2, '0'), 'standard', 'available', CHR(65 + ((i - 1) / 6)), ((i - 1) % 6) + 1)
-    ON CONFLICT (space_id, seat_number) DO UPDATE SET
-      seat_type = EXCLUDED.seat_type,
-      row_label = EXCLUDED.row_label,
-      column_number = EXCLUDED.column_number;
-  END LOOP;
-
-  -- Populate Seats for Research Room (6 seats)
-  FOR i IN 1..6 LOOP
-    INSERT INTO public.seats (space_id, seat_number, seat_type, status, row_label, column_number)
-    VALUES (s6, 'S' || LPAD(i::TEXT, 2, '0'), 'group', 'available', 'Round Table', i)
-    ON CONFLICT (space_id, seat_number) DO UPDATE SET
-      seat_type = EXCLUDED.seat_type,
-      row_label = EXCLUDED.row_label,
-      column_number = EXCLUDED.column_number;
-  END LOOP;
-
-  ALTER TABLE public.seats ENABLE TRIGGER trg_check_seat_capacity;
-
-END $$;
