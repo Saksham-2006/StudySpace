@@ -2,7 +2,7 @@
 "use client";
 
 import { useRef } from "react";
-import type { CSSProperties } from "react";
+import Link from "next/link";
 import { useEditorialAnimations } from "./useEditorialAnimations";
 
 const spaces = [
@@ -91,7 +91,7 @@ export default function SpaceCategories() {
             <li className="prog" key={space.title}>
               <span className="prog__rule" data-rule />
 
-              <a className="prog__link" href="/spaces">
+              <Link className="prog__link" href="/spaces">
                 <span className="prog__title">
                   {space.title}
                 </span>
@@ -113,7 +113,7 @@ export default function SpaceCategories() {
                     loading={index < 2 ? "eager" : "lazy"}
                   />
                 </span>
-              </a>
+              </Link>
             </li>
           ))}
         </ul>

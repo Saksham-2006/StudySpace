@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import Link from "next/link";
 import gsap from "gsap";
 import ScrollTrigger from "gsap/ScrollTrigger";
 
@@ -188,9 +189,9 @@ export default function Venue() {
                     </dl>
 
                     <div className="venue__actions">
-                        <a className="btn btn--sun" href="/spaces">
+                        <Link className="btn btn--sun" href="/spaces">
                             Find your study space
-                        </a>
+                        </Link>
                     </div>
                 </div>
 

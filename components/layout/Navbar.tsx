@@ -1,19 +1,56 @@
-
 "use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-
-const navLinks = [
-  { label: "Home", href: "/#hero" },
-  { label: "About", href: "/#about" },
-  { label: "Spaces", href: "/#spaces" },
-  { label: "How it works", href: "/#venue" },
-  { label: "Gallery", href: "/#gallery" },
-];
+import { createClient } from "@/lib/supabase/client";
 
 export default function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [user, setUser] = useState<{ id: string; email?: string } | null>(null);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  useEffect(() => {
+    const supabase = createClient();
+
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) {
+        setUser(user);
+        supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", user.id)
+          .single()
+          .then(({ data }) => {
+            if (data?.role === "admin") {
+              setIsAdmin(true);
+            }
+          });
+      }
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const u = session?.user ?? null;
+      setUser(u);
+      if (u) {
+        supabase
+          .from("profiles")
+          .select("role")
+          .eq("id", u.id)
+          .single()
+          .then(({ data }) => {
+            setIsAdmin(data?.role === "admin");
+          });
+      } else {
+        setIsAdmin(false);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -34,10 +71,7 @@ export default function Navbar() {
           header.classList.add("is-hidden");
         }
 
-        if (
-          currentScroll < lastScroll - 2 ||
-          currentScroll < 320
-        ) {
+        if (currentScroll < lastScroll - 2 || currentScroll < 320) {
           header.classList.remove("is-hidden");
         }
       }
@@ -78,7 +112,7 @@ export default function Navbar() {
       {/* Brand */}
       <Link
         className="brand"
-        href="#hero"
+        href="/"
         onClick={closeMenu}
         aria-label="Seat to Study, home"
       >
@@ -96,22 +130,60 @@ export default function Navbar() {
 
       {/* Navigation */}
       <nav className="nav" id="site-nav" aria-label="Main navigation">
-        {navLinks.map((link) => (
-          <a key={link.href} href={link.href} onClick={closeMenu}>
-            {link.label}
-          </a>
-        ))}
-
-        <Link className="nav__login" href="/login" onClick={closeMenu}>
-          Sign In
+        <Link href="/" onClick={closeMenu}>
+          Home
         </Link>
 
-        <Link className="btn" href="/spaces" onClick={closeMenu}>
-          Find a Seat
+        <Link href="/spaces" onClick={closeMenu}>
+          Spaces
         </Link>
+
+        {user ? (
+          <>
+            <Link href="/bookings" onClick={closeMenu}>
+              My Bookings
+            </Link>
+
+            <Link href="/profile" onClick={closeMenu}>
+              Profile
+            </Link>
+
+            {isAdmin && (
+              <Link
+                href="/admin"
+                onClick={closeMenu}
+                style={{ color: "var(--sun)", fontWeight: 600 }}
+              >
+                Admin ↗
+              </Link>
+            )}
+
+            <Link className="btn btn--sun" href="/spaces" onClick={closeMenu}>
+              Find a Seat
+            </Link>
+          </>
+        ) : (
+          <>
+            <Link href="/#about" onClick={closeMenu}>
+              About
+            </Link>
+
+            <Link href="/#venue" onClick={closeMenu}>
+              How it works
+            </Link>
+
+            <Link className="nav__login" href="/login" onClick={closeMenu}>
+              Sign In
+            </Link>
+
+            <Link className="btn btn--sun" href="/spaces" onClick={closeMenu}>
+              Find a Seat
+            </Link>
+          </>
+        )}
       </nav>
 
-      {/* Mobile menu */}
+      {/* Mobile menu button */}
       <button
         className="menu-btn"
         type="button"
