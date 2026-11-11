@@ -9,6 +9,12 @@ export type SeatAvailability = {
   is_reserved: boolean;
 };
 
+function rethrowIfNextDynamic(err: unknown) {
+  if (typeof err === "object" && err !== null && "digest" in err) {
+    throw err;
+  }
+}
+
 /** Returns privacy-safe seat availability without exposing other users' booking records. */
 export async function getSeatAvailability(params: {
   spaceId: string;
@@ -25,6 +31,7 @@ export async function getSeatAvailability(params: {
     if (error) return { success: false, seats: [], error: error.message };
     return { success: true, seats: (data ?? []) as SeatAvailability[] };
   } catch (err) {
+    rethrowIfNextDynamic(err);
     return {
       success: false,
       seats: [],
@@ -36,7 +43,7 @@ export async function getSeatAvailability(params: {
 export async function getUserBookings(userId: string): Promise<Booking[]> {
   try {
     const supabase = await createClient();
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("bookings")
       .select(`
         id,
@@ -48,12 +55,38 @@ export async function getUserBookings(userId: string): Promise<Booking[]> {
         status,
         created_at,
         spaces(id, name, space_type, image_url, buildings(name, location)),
-        seats(id, seat_number, seat_type, row_label)
+        seats:seats!fk_bookings_seat_space(id, seat_number, seat_type, row_label)
       `)
       .eq("user_id", userId)
       .order("start_at", { ascending: false });
 
-    if (error || !data) {
+    if (error && error.code === "PGRST201") {
+      const retry = await supabase
+        .from("bookings")
+        .select(`
+          id,
+          user_id,
+          seat_id,
+          space_id,
+          start_at,
+          end_at,
+          status,
+          created_at,
+          spaces(id, name, space_type, image_url, buildings(name, location)),
+          seats:seats!bookings_seat_id_fkey(id, seat_number, seat_type, row_label)
+        `)
+        .eq("user_id", userId)
+        .order("start_at", { ascending: false });
+      data = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      console.error("[getUserBookings] Supabase error:", error);
+      return [];
+    }
+
+    if (!data) {
       return [];
     }
 
@@ -109,7 +142,9 @@ export async function getUserBookings(userId: string): Promise<Booking[]> {
         : undefined,
       seat: b.seats as unknown as Booking["seat"],
     }));
-  } catch {
+  } catch (err) {
+    rethrowIfNextDynamic(err);
+    console.error("[getUserBookings] Unexpected error:", err);
     return [];
   }
 }

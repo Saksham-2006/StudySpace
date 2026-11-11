@@ -18,6 +18,12 @@ export type RawSpace = {
   zones?: { id: string; name: string; floor_number: number } | null;
 };
 
+function rethrowIfNextDynamic(err: unknown) {
+  if (typeof err === "object" && err !== null && "digest" in err) {
+    throw err;
+  }
+}
+
 export async function getBuildings(): Promise<Building[]> {
   try {
     const supabase = await createClient();
@@ -26,11 +32,14 @@ export async function getBuildings(): Promise<Building[]> {
       .select("id, name, description, location")
       .order("name");
 
-    if (error || !data) {
+    if (error) {
+      console.error("[getBuildings] Supabase query error:", error);
       return [];
     }
-    return data;
-  } catch {
+    return data || [];
+  } catch (err) {
+    rethrowIfNextDynamic(err);
+    console.error("[getBuildings] Unexpected error:", err);
     return [];
   }
 }
@@ -59,7 +68,7 @@ export async function getSpaces(filters?: {
         status,
         facilities,
         buildings(id, name, location),
-        zones(id, name, floor_number)
+        zones:zones!fk_spaces_zone_building(id, name, floor_number)
       `)
       .order("name");
 
@@ -71,20 +80,55 @@ export async function getSpaces(filters?: {
       query = query.eq("building_id", filters.buildingId);
     }
 
-    const { data, error } = await query;
+    let { data, error } = await query;
 
-    if (error || !data || data.length === 0) {
+    // Fallback if foreign key naming differs in specific environments
+    if (error && error.code === "PGRST201") {
+      console.warn("[getSpaces] Ambiguous relationship detected, retrying with spaces_zone_id_fkey...");
+      const retryQuery = await supabase
+        .from("spaces")
+        .select(`
+          id,
+          building_id,
+          zone_id,
+          name,
+          description,
+          space_type,
+          capacity,
+          image_url,
+          opening_time,
+          closing_time,
+          status,
+          facilities,
+          buildings(id, name, location),
+          zones:zones!spaces_zone_id_fkey(id, name, floor_number)
+        `)
+        .order("name");
+      data = retryQuery.data;
+      error = retryQuery.error;
+    }
+
+    if (error) {
+      console.error("[getSpaces] Supabase query error:", error);
+      return [];
+    }
+
+    if (!data || data.length === 0) {
       return [];
     }
 
     // Fetch active bookings around now to compute available seats
     const nowIso = new Date().toISOString();
-    const { data: activeBookings } = await supabase
+    const { data: activeBookings, error: bookingsErr } = await supabase
       .from("bookings")
       .select("seat_id, space_id")
       .in("status", ["confirmed", "checked_in"])
       .lte("start_at", nowIso)
       .gte("end_at", nowIso);
+
+    if (bookingsErr) {
+      console.warn("[getSpaces] Notice fetching active bookings:", bookingsErr.message);
+    }
 
     const activeMap = new Map<string, number>();
     activeBookings?.forEach((b) => {
@@ -133,7 +177,9 @@ export async function getSpaces(filters?: {
     }
 
     return spaces;
-  } catch {
+  } catch (err) {
+    rethrowIfNextDynamic(err);
+    console.error("[getSpaces] Unexpected error:", err);
     return [];
   }
 }
@@ -141,7 +187,7 @@ export async function getSpaces(filters?: {
 export async function getSpaceById(id: string): Promise<StudySpace | null> {
   try {
     const supabase = await createClient();
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("spaces")
       .select(`
         id,
@@ -157,12 +203,42 @@ export async function getSpaceById(id: string): Promise<StudySpace | null> {
         status,
         facilities,
         buildings(id, name, location),
-        zones(id, name, floor_number)
+        zones:zones!fk_spaces_zone_building(id, name, floor_number)
       `)
       .eq("id", id)
       .single();
 
-    if (error || !data) {
+    if (error && error.code === "PGRST201") {
+      const retry = await supabase
+        .from("spaces")
+        .select(`
+          id,
+          building_id,
+          zone_id,
+          name,
+          description,
+          space_type,
+          capacity,
+          image_url,
+          opening_time,
+          closing_time,
+          status,
+          facilities,
+          buildings(id, name, location),
+          zones:zones!spaces_zone_id_fkey(id, name, floor_number)
+        `)
+        .eq("id", id)
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      console.error("[getSpaceById] Supabase query error:", error);
+      return null;
+    }
+
+    if (!data) {
       return null;
     }
 
@@ -189,7 +265,9 @@ export async function getSpaceById(id: string): Promise<StudySpace | null> {
       location: bldg,
       total_seats_count: raw.capacity,
     };
-  } catch {
+  } catch (err) {
+    rethrowIfNextDynamic(err);
+    console.error("[getSpaceById] Unexpected error:", err);
     return null;
   }
 }
@@ -272,7 +350,9 @@ export async function getSpaceSeats(
 
       return { ...seat, computed_state: "available" as const };
     });
-  } catch {
+  } catch (err) {
+    rethrowIfNextDynamic(err);
+    console.error("[getSpaceSeats] Unexpected error:", err);
     return [];
   }
 }

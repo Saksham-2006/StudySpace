@@ -132,7 +132,11 @@ export async function getAdminAnalytics(): Promise<AdminAnalytics> {
       spaceUtilisation,
       peakOccupancyHours,
     };
-  } catch {
+  } catch (err: unknown) {
+    if (err && typeof err === "object" && "digest" in err) {
+      throw err;
+    }
+    console.error("[getAdminAnalytics] Error:", err);
     return {
       totalBuildings: 0,
       totalSpaces: 0,
@@ -175,7 +179,7 @@ export async function getAllBookings(filters?: {
         status,
         created_at,
         spaces(id, name, space_type),
-        seats(id, seat_number),
+        seats:seats!fk_bookings_seat_space(id, seat_number),
         profiles(id, full_name, email)
       `)
       .order("start_at", { ascending: false });
@@ -184,8 +188,35 @@ export async function getAllBookings(filters?: {
       query = query.eq("status", filters.status);
     }
 
-    const { data, error } = await query;
-    if (error || !data) return [];
+    let { data, error } = await query;
+
+    if (error && error.code === "PGRST201") {
+      const retry = await supabase
+        .from("bookings")
+        .select(`
+          id,
+          user_id,
+          seat_id,
+          space_id,
+          start_at,
+          end_at,
+          status,
+          created_at,
+          spaces(id, name, space_type),
+          seats:seats!bookings_seat_id_fkey(id, seat_number),
+          profiles(id, full_name, email)
+        `)
+        .order("start_at", { ascending: false });
+      data = retry.data;
+      error = retry.error;
+    }
+
+    if (error) {
+      console.error("[getAllBookings] Supabase error:", error);
+      return [];
+    }
+
+    if (!data) return [];
 
     type BookingRecord = {
       id: string;
@@ -214,7 +245,11 @@ export async function getAllBookings(filters?: {
       seat: b.seats as unknown as Booking["seat"],
       user: b.profiles as unknown as Booking["user"],
     }));
-  } catch {
+  } catch (err: unknown) {
+    if (err && typeof err === "object" && "digest" in err) {
+      throw err;
+    }
+    console.error("[getAllBookings] Error:", err);
     return [];
   }
 }
