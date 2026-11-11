@@ -174,7 +174,7 @@ BEGIN
   END IF;
   RETURN NEW;
 END;
-$$
+$$;
 
 DROP TRIGGER IF EXISTS trg_check_seat_capacity ON public.seats;
 CREATE TRIGGER trg_check_seat_capacity
@@ -405,8 +405,8 @@ BEGIN
     RAISE EXCEPTION 'Booking end time must be strictly after start time.';
   END IF;
 
-  v_duration_mins := pg_catalog.ceil(pg_catalog.extract(epoch FROM (p_end_at - p_start_at)) / 60)::INT;
-  IF pg_catalog.extract(epoch FROM (p_end_at - p_start_at)) < 900 THEN
+  v_duration_mins := CEIL(EXTRACT(EPOCH FROM (p_end_at - p_start_at)) / 60)::INT;
+  IF EXTRACT(EPOCH FROM (p_end_at - p_start_at)) < 900 THEN
     RAISE EXCEPTION 'Minimum booking duration is 15 minutes.';
   END IF;
 
