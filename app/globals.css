@@ -893,3 +893,76 @@
     padding: 65px var(--gut) 85px;
   }
 }
+
+
+/* =========================================
+   STUDENT PROFILE
+========================================= */
+
+.profile-page {
+  min-height: 100vh;
+  padding-top: calc(var(--head-h) + 100px);
+  padding-bottom: 120px;
+}
+
+.profile-page__heading {
+  margin-bottom: 55px;
+}
+
+.profile-page__heading .tracked {
+  color: var(--rust);
+  margin-bottom: 20px;
+}
+
+.profile-page__heading .h2 {
+  font-size: clamp(55px, 8vw, 100px);
+}
+
+.profile-page__heading .lead {
+  margin-top: 18px;
+  color: var(--sage);
+}
+
+.profile-card {
+  max-width: 680px;
+  padding: clamp(25px, 5vw, 55px);
+  border: 1px solid color-mix(in oklab, var(--ink) 30%, transparent);
+}
+
+.profile-card > .tracked {
+  color: var(--rust);
+}
+
+.profile-card h2 {
+  margin: 25px 0 8px;
+  font-family: var(--f-display);
+  font-size: clamp(34px, 5vw, 55px);
+  font-weight: 300;
+}
+
+.profile-card > p:not(.tracked) {
+  color: var(--sage);
+}
+
+.profile-role {
+  display: inline-block;
+  margin-top: 22px;
+  padding: 7px 14px;
+  border: 1px solid var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.15em;
+}
+
+.profile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 15px;
+  margin-top: 38px;
+}
+
+.profile-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
