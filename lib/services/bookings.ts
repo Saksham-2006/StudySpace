@@ -114,60 +114,34 @@ export async function createBooking(params: {
       return { success: false, error: "Cannot book a time slot in the past." };
     }
 
-    // Try calling the atomic RPC if available
+    // Execute trusted atomic booking RPC
     const { data: rpcData, error: rpcError } = await supabase.rpc("create_seat_booking", {
       p_seat_id: params.seatId,
       p_start_at: params.startAt,
       p_end_at: params.endAt,
     });
 
-    if (!rpcError && rpcData?.success) {
-      return {
-        success: true,
-        booking: {
-          id: rpcData.booking_id,
-          user_id: user.id,
-          seat_id: rpcData.seat_id,
-          space_id: rpcData.space_id,
-          start_at: rpcData.start_at,
-          end_at: rpcData.end_at,
-          status: rpcData.status,
-          created_at: new Date().toISOString(),
-        },
-      };
+    if (rpcError) {
+      return { success: false, error: rpcError.message };
     }
 
-    // Fallback direct table query if RPC is not yet created
-    const { data: conflicts } = await supabase
-      .from("bookings")
-      .select("id")
-      .eq("seat_id", params.seatId)
-      .in("status", ["confirmed", "checked_in"])
-      .lt("start_at", params.endAt)
-      .gt("end_at", params.startAt);
-
-    if (conflicts && conflicts.length > 0) {
-      return { success: false, error: "This seat has already been booked for this time window." };
+    if (!rpcData?.success) {
+      return { success: false, error: "Failed to create booking reservation." };
     }
 
-    const { data: newBooking, error: insertError } = await supabase
-      .from("bookings")
-      .insert({
+    return {
+      success: true,
+      booking: {
+        id: rpcData.booking_id,
         user_id: user.id,
-        seat_id: params.seatId,
-        space_id: params.spaceId,
-        start_at: params.startAt,
-        end_at: params.endAt,
-        status: "confirmed",
-      })
-      .select()
-      .single();
-
-    if (insertError) {
-      return { success: false, error: insertError.message };
-    }
-
-    return { success: true, booking: newBooking };
+        seat_id: rpcData.seat_id,
+        space_id: rpcData.space_id,
+        start_at: rpcData.start_at,
+        end_at: rpcData.end_at,
+        status: rpcData.status,
+        created_at: new Date().toISOString(),
+      },
+    };
   } catch (err) {
     return {
       success: false,
@@ -189,60 +163,17 @@ export async function checkInBooking(
       return { success: false, error: "Authentication required." };
     }
 
-    // Attempt RPC first
     const { data: rpcData, error: rpcError } = await supabase.rpc("check_in_booking", {
       p_booking_id: bookingId,
     });
 
-    if (!rpcError && rpcData?.success) {
-      return { success: true };
+    if (rpcError) {
+      return { success: false, error: rpcError.message };
     }
 
-    // Fallback direct update
-    const { data: booking, error: fetchErr } = await supabase
-      .from("bookings")
-      .select("id, user_id, seat_id, start_at, end_at, status")
-      .eq("id", bookingId)
-      .single();
-
-    if (fetchErr || !booking) {
-      return { success: false, error: "Booking not found." };
+    if (rpcData && !rpcData.success) {
+      return { success: false, error: rpcData.message || "Failed to check in." };
     }
-
-    if (booking.user_id !== user.id) {
-      return { success: false, error: "Unauthorized." };
-    }
-
-    if (booking.status !== "confirmed") {
-      return { success: false, error: `Booking is currently ${booking.status}.` };
-    }
-
-    const now = new Date();
-    const start = new Date(booking.start_at);
-    // Allow check in from 20 minutes before start
-    if (now.getTime() < start.getTime() - 20 * 60 * 1000) {
-      return {
-        success: false,
-        error: "Check-in opens 20 minutes prior to your booking start time.",
-      };
-    }
-
-    const { error: updateErr } = await supabase
-      .from("bookings")
-      .update({ status: "checked_in", updated_at: now.toISOString() })
-      .eq("id", bookingId);
-
-    if (updateErr) {
-      return { success: false, error: updateErr.message };
-    }
-
-    // Record occupancy log
-    await supabase.from("occupancy_logs").insert({
-      seat_id: booking.seat_id,
-      user_id: user.id,
-      booking_id: bookingId,
-      event_type: "check_in",
-    });
 
     return { success: true };
   } catch (err) {
@@ -263,46 +194,17 @@ export async function checkOutBooking(
       return { success: false, error: "Authentication required." };
     }
 
-    // Try RPC first
     const { data: rpcData, error: rpcError } = await supabase.rpc("check_out_booking", {
       p_booking_id: bookingId,
     });
 
-    if (!rpcError && rpcData?.success) {
-      return { success: true };
+    if (rpcError) {
+      return { success: false, error: rpcError.message };
     }
 
-    // Direct update
-    const now = new Date().toISOString();
-    const { data: booking, error: fetchErr } = await supabase
-      .from("bookings")
-      .select("id, user_id, seat_id, status")
-      .eq("id", bookingId)
-      .single();
-
-    if (fetchErr || !booking) {
-      return { success: false, error: "Booking not found." };
+    if (rpcData && !rpcData.success) {
+      return { success: false, error: rpcData.message || "Failed to check out." };
     }
-
-    if (booking.user_id !== user.id) {
-      return { success: false, error: "Unauthorized." };
-    }
-
-    const { error: updateErr } = await supabase
-      .from("bookings")
-      .update({ status: "completed", updated_at: now })
-      .eq("id", bookingId);
-
-    if (updateErr) {
-      return { success: false, error: updateErr.message };
-    }
-
-    await supabase.from("occupancy_logs").insert({
-      seat_id: booking.seat_id,
-      user_id: user.id,
-      booking_id: bookingId,
-      event_type: "check_out",
-    });
 
     return { success: true };
   } catch (err) {
@@ -323,47 +225,17 @@ export async function cancelBooking(
       return { success: false, error: "Authentication required." };
     }
 
-    // Try RPC first
     const { data: rpcData, error: rpcError } = await supabase.rpc("cancel_booking", {
       p_booking_id: bookingId,
     });
 
-    if (!rpcError && rpcData?.success) {
-      return { success: true };
+    if (rpcError) {
+      return { success: false, error: rpcError.message };
     }
 
-    // Direct update
-    const now = new Date().toISOString();
-    const { data: booking, error: fetchErr } = await supabase
-      .from("bookings")
-      .select("id, user_id, seat_id, status")
-      .eq("id", bookingId)
-      .single();
-
-    if (fetchErr || !booking) {
-      return { success: false, error: "Booking not found." };
+    if (rpcData && !rpcData.success) {
+      return { success: false, error: rpcData.message || "Failed to cancel booking." };
     }
-
-    if (booking.user_id !== user.id) {
-      return { success: false, error: "Unauthorized." };
-    }
-
-    const { error: updateErr } = await supabase
-      .from("bookings")
-      .update({ status: "cancelled", updated_at: now })
-      .eq("id", bookingId);
-
-    if (updateErr) {
-      return { success: false, error: updateErr.message };
-    }
-
-    await supabase.from("occupancy_logs").insert({
-      seat_id: booking.seat_id,
-      user_id: user.id,
-      booking_id: bookingId,
-      event_type: "manual_override",
-      metadata: { reason: "student_cancelled" },
-    });
 
     return { success: true };
   } catch (err) {
