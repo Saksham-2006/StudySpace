@@ -21,7 +21,7 @@ export default function SeatMap({
   initialSeats,
   usageRule,
 }: SeatMapProps) {
-  // Date and Time slots
+  // Date options (Today + next 3 days)
   const dateOptions = useMemo(() => {
     const today = new Date();
     return Array.from({ length: 4 }, (_, i) => {
@@ -36,7 +36,7 @@ export default function SeatMap({
   const [selectedDateIdx, setSelectedDateIdx] = useState(0);
 
   // Time slot options (2-hour blocks)
-  const timeSlots = [
+  const timeSlots = useMemo(() => [
     { id: "slot-1", label: "08:00 – 10:00", startHour: 8, endHour: 10 },
     { id: "slot-2", label: "10:00 – 12:00", startHour: 10, endHour: 12 },
     { id: "slot-3", label: "12:00 – 14:00", startHour: 12, endHour: 14 },
@@ -44,73 +44,23 @@ export default function SeatMap({
     { id: "slot-5", label: "16:00 – 18:00", startHour: 16, endHour: 18 },
     { id: "slot-6", label: "18:00 – 20:00", startHour: 18, endHour: 20 },
     { id: "slot-7", label: "20:00 – 22:00", startHour: 20, endHour: 22 },
-  ];
+  ], []);
 
   const [selectedSlotIdx, setSelectedSlotIdx] = useState(1);
   const [selectedSeat, setSelectedSeat] = useState<Seat | null>(null);
+  const [seats, setSeats] = useState<Seat[]>(initialSeats || []);
+  const [loadingAvailability, setLoadingAvailability] = useState(false);
+  const [availabilityError, setAvailabilityError] = useState<string | null>(null);
+
   const [modalOpen, setModalOpen] = useState(false);
   const [bookingLoading, setBookingLoading] = useState(false);
   const [bookingError, setBookingError] = useState<string | null>(null);
   const [bookingSuccess, setBookingSuccess] = useState<boolean>(false);
 
-  const defaultSeats: Seat[] = useMemo(() => {
-    if (initialSeats && initialSeats.length > 0) {
-      return initialSeats;
-    }
-
-    const safeCapacity = Math.max(1, Math.floor(capacity));
-    return Array.from({ length: safeCapacity }, (_, index) => {
-      const seatNum = `S${String(index + 1).padStart(2, "0")}`;
-      const isWindow = index < 6;
-      const isOcc = index % 5 === 1;
-      const isRes = index % 7 === 2;
-
-      let state: "available" | "reserved" | "occupied" | "unavailable" = "available";
-      if (isOcc) state = "occupied";
-      else if (isRes) state = "reserved";
-
-      return {
-        id: `seat-${spaceId}-${index + 1}`,
-        space_id: spaceId,
-        seat_number: seatNum,
-        seat_type: isWindow ? "window" : "standard",
-        status: "available",
-        row_label: String.fromCharCode(65 + Math.floor(index / 6)),
-        column_number: (index % 6) + 1,
-        computed_state: state,
-      };
-    });
-  }, [initialSeats, capacity, spaceId]);
-
-  const [seats, setSeats] = useState<Seat[]>(defaultSeats);
-
-  // Realtime subscription for live seat availability changes
-  const handleBookingChange = useCallback((payload: unknown) => {
-    const data = payload as { new?: { seat_id?: string; status?: string } };
-    if (!data?.new?.seat_id) return;
-    const { seat_id, status } = data.new;
-    setSeats((prev) =>
-      prev.map((s) => {
-        if (s.id !== seat_id) return s;
-        let nextState: "available" | "reserved" | "occupied" | "unavailable" = "available";
-        if (status === "checked_in") nextState = "occupied";
-        else if (status === "confirmed") nextState = "reserved";
-        else if (status === "cancelled" || status === "completed") nextState = "available";
-        return { ...s, computed_state: nextState };
-      })
-    );
-  }, []);
-
-  useRealtimeBookings(spaceId, handleBookingChange);
-
-  const availableCount = seats.filter(
-    (s) => s.computed_state === "available"
-  ).length;
-
   const activeDate = dateOptions[selectedDateIdx];
   const activeSlot = timeSlots[selectedSlotIdx];
 
-  const calculateInterval = () => {
+  const calculateInterval = useCallback(() => {
     const start = new Date(activeDate.dateObj);
     start.setHours(activeSlot.startHour, 0, 0, 0);
 
@@ -121,17 +71,79 @@ export default function SeatMap({
       startAt: start.toISOString(),
       endAt: end.toISOString(),
     };
+  }, [activeDate, activeSlot]);
+
+  // Fetch real seat availability for current interval
+  const fetchAvailability = useCallback(async (startAt: string, endAt: string) => {
+    setLoadingAvailability(true);
+    setAvailabilityError(null);
+    try {
+      const res = await fetch(
+        `/api/spaces/${spaceId}/availability?startAt=${encodeURIComponent(startAt)}&endAt=${encodeURIComponent(endAt)}`
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || "Failed to load seat availability.");
+      }
+      if (data.seats && Array.isArray(data.seats)) {
+        setSeats(data.seats);
+      }
+    } catch (err) {
+      setAvailabilityError(err instanceof Error ? err.message : "Error refreshing seat availability.");
+    } finally {
+      setLoadingAvailability(false);
+    }
+  }, [spaceId]);
+
+  // Realtime subscription for live seat availability changes
+  const handleBookingChange = useCallback(() => {
+    const { startAt, endAt } = calculateInterval();
+    fetchAvailability(startAt, endAt);
+  }, [calculateInterval, fetchAvailability]);
+
+  useRealtimeBookings(spaceId, handleBookingChange);
+
+  // Derive effective selected seat: only valid if currently available in active slot
+  const isSelectedAvailable = selectedSeat
+    ? seats.some((s) => s.id === selectedSeat.id && (s.computed_state || s.status) === "available")
+    : false;
+  const activeSelectedSeat = isSelectedAvailable ? selectedSeat : null;
+
+  const handleSelectDate = (idx: number) => {
+    setSelectedDateIdx(idx);
+    setSelectedSeat(null);
+    const dateObj = dateOptions[idx].dateObj;
+    const start = new Date(dateObj);
+    start.setHours(activeSlot.startHour, 0, 0, 0);
+    const end = new Date(dateObj);
+    end.setHours(activeSlot.endHour, 0, 0, 0);
+    fetchAvailability(start.toISOString(), end.toISOString());
   };
 
+  const handleSelectSlot = (idx: number) => {
+    setSelectedSlotIdx(idx);
+    setSelectedSeat(null);
+    const slot = timeSlots[idx];
+    const start = new Date(activeDate.dateObj);
+    start.setHours(slot.startHour, 0, 0, 0);
+    const end = new Date(activeDate.dateObj);
+    end.setHours(slot.endHour, 0, 0, 0);
+    fetchAvailability(start.toISOString(), end.toISOString());
+  };
+
+  const availableCount = seats.filter(
+    (s) => (s.computed_state || s.status) === "available"
+  ).length;
+
   const handleOpenBookingModal = () => {
-    if (!selectedSeat) return;
+    if (!activeSelectedSeat) return;
     setBookingError(null);
     setBookingSuccess(false);
     setModalOpen(true);
   };
 
   const handleConfirmReservation = async () => {
-    if (!selectedSeat) return;
+    if (!activeSelectedSeat) return;
     setBookingLoading(true);
     setBookingError(null);
 
@@ -142,7 +154,7 @@ export default function SeatMap({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          seatId: selectedSeat.id,
+          seatId: activeSelectedSeat.id,
           spaceId: spaceId,
           startAt,
           endAt,
@@ -156,10 +168,12 @@ export default function SeatMap({
       }
 
       setBookingSuccess(true);
-      const bookedSeatId = selectedSeat.id;
+      const bookedSeatId = activeSelectedSeat.id;
       setSeats((prev) =>
         prev.map((s) => (s.id === bookedSeatId ? { ...s, computed_state: "reserved" } : s))
       );
+      // Re-fetch accurate backend state
+      fetchAvailability(startAt, endAt);
     } catch (err) {
       setBookingError(
         err instanceof Error ? err.message : "Reservation failed. Please try again."
@@ -178,9 +192,22 @@ export default function SeatMap({
         </div>
 
         <p className="seat-selection__count">
-          {availableCount} of {seats.length} seats available
+          {loadingAvailability ? (
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+              <Loader2 size={13} className="auth-spinner" /> Updating availability...
+            </span>
+          ) : (
+            `${availableCount} of ${seats.length} seats available`
+          )}
         </p>
       </div>
+
+      {availabilityError && (
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "12px", background: "color-mix(in oklab, #9a2d22 15%, transparent)", border: "1px solid #9a2d22", color: "#9a2d22", fontSize: "13px", marginBottom: "16px" }}>
+          <AlertCircle size={16} />
+          <span>{availabilityError}</span>
+        </div>
+      )}
 
       {/* Date & Time Slot Selector */}
       <div className="booking-time-picker">
@@ -196,10 +223,7 @@ export default function SeatMap({
                   key={opt.isoDate}
                   type="button"
                   className={`slot-pill ${selectedDateIdx === i ? "is-active" : ""}`}
-                  onClick={() => {
-                    setSelectedDateIdx(i);
-                    setSelectedSeat(null);
-                  }}
+                  onClick={() => handleSelectDate(i)}
                 >
                   <Calendar size={13} style={{ display: "inline", marginRight: "6px" }} />
                   {opt.label}
@@ -218,10 +242,7 @@ export default function SeatMap({
                   key={slot.id}
                   type="button"
                   className={`slot-pill ${selectedSlotIdx === i ? "is-active" : ""}`}
-                  onClick={() => {
-                    setSelectedSlotIdx(i);
-                    setSelectedSeat(null);
-                  }}
+                  onClick={() => handleSelectSlot(i)}
                 >
                   <Clock size={13} style={{ display: "inline", marginRight: "6px" }} />
                   {slot.label}
@@ -260,65 +281,87 @@ export default function SeatMap({
         </span>
       </div>
 
-      {/* Seat Grid Map */}
-      <div className="seat-map">
-        <div className="seat-map__screen">FRONT / PRESENTATION AREA</div>
-
-        <div className="seat-map__grid">
-          {seats.map((seat) => {
-            const isSelected = selectedSeat?.id === seat.id;
-            const state = seat.computed_state || "available";
-            const isAvailable = state === "available";
-
-            let stateClass = "";
-            if (state === "occupied") stateClass = "is-occupied";
-            else if (state === "reserved") stateClass = "is-reserved";
-            else if (state === "unavailable") stateClass = "is-unavailable";
-            else if (isSelected) stateClass = "is-selected";
-
-            return (
-              <button
-                key={seat.id}
-                type="button"
-                disabled={!isAvailable}
-                aria-label={`Seat ${seat.seat_number}, ${isSelected ? "selected" : state}`}
-                aria-pressed={isSelected}
-                className={`seat ${stateClass}`}
-                onClick={() => {
-                  if (isSelected) {
-                    setSelectedSeat(null);
-                  } else {
-                    setSelectedSeat(seat);
-                  }
-                }}
-              >
-                {isSelected ? (
-                  <Check size={17} />
-                ) : (
-                  <Armchair size={17} />
-                )}
-
-                <span>{seat.seat_number}</span>
-              </button>
-            );
-          })}
+      {/* Seat Grid Map or Empty State */}
+      {seats.length === 0 ? (
+        <div className="seat-map" style={{ textAlign: "center", padding: "60px 20px" }}>
+          {loadingAvailability ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "12px" }}>
+              <Loader2 size={32} className="auth-spinner" style={{ color: "var(--sun)" }} />
+              <p style={{ color: "var(--sage)" }}>Checking real-time seat availability...</p>
+            </div>
+          ) : (
+            <div style={{ maxWidth: "440px", margin: "0 auto" }}>
+              <Armchair size={48} style={{ color: "var(--khaki)", margin: "0 auto 16px" }} />
+              <h3 className="h3" style={{ marginBottom: "10px", fontSize: "24px" }}>No Seats Configured</h3>
+              <p style={{ color: "var(--sage)", fontSize: "14px", lineHeight: 1.6, marginBottom: "20px" }}>
+                Seats for this study space (capacity: {capacity}) have not been mapped yet. Please select another space from campus.
+              </p>
+              <Link href="/spaces" className="btn btn--paper" style={{ display: "inline-flex" }}>
+                Browse other spaces
+              </Link>
+            </div>
+          )}
         </div>
-      </div>
+      ) : (
+        <div className="seat-map">
+          <div className="seat-map__screen">FRONT / PRESENTATION AREA</div>
+
+          <div className="seat-map__grid">
+            {seats.map((seat) => {
+              const isSelected = activeSelectedSeat?.id === seat.id;
+              const state = seat.computed_state || seat.status || "available";
+              const isAvailable = state === "available";
+
+              let stateClass = "";
+              if (state === "occupied") stateClass = "is-occupied";
+              else if (state === "reserved") stateClass = "is-reserved";
+              else if (state === "unavailable" || state === "maintenance" || state === "blocked") stateClass = "is-unavailable";
+              else if (isSelected) stateClass = "is-selected";
+
+              return (
+                <button
+                  key={seat.id}
+                  type="button"
+                  disabled={!isAvailable}
+                  aria-label={`Seat ${seat.seat_number}, ${isSelected ? "selected" : state}`}
+                  aria-pressed={isSelected}
+                  className={`seat ${stateClass}`}
+                  onClick={() => {
+                    if (isSelected) {
+                      setSelectedSeat(null);
+                    } else if (isAvailable) {
+                      setSelectedSeat(seat);
+                    }
+                  }}
+                >
+                  {isSelected ? (
+                    <Check size={17} />
+                  ) : (
+                    <Armchair size={17} />
+                  )}
+
+                  <span>{seat.seat_number}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="seat-selection__footer">
         <p>
-          {selectedSeat
-            ? `Seat ${selectedSeat.seat_number} selected for ${activeDate.label} (${activeSlot.label}).`
+          {activeSelectedSeat
+            ? `Seat ${activeSelectedSeat.seat_number} selected for ${activeDate.label} (${activeSlot.label}).`
             : "Choose an available seat to reserve your session."}
         </p>
 
         <button
           type="button"
           className="btn btn--sun"
-          disabled={!selectedSeat}
+          disabled={!activeSelectedSeat}
           onClick={handleOpenBookingModal}
         >
-          Reserve Seat {selectedSeat ? selectedSeat.seat_number : ""} ↗
+          Reserve Seat {activeSelectedSeat ? activeSelectedSeat.seat_number : ""} ↗
         </button>
       </div>
 
@@ -349,7 +392,7 @@ export default function SeatMap({
                   Reservation Confirmed!
                 </h4>
                 <p style={{ color: "var(--sage)", marginBottom: "28px", fontSize: "14px" }}>
-                  Your seat <strong>{selectedSeat?.seat_number}</strong> is successfully booked for {activeDate.label} at {activeSlot.label}. You can check in upon arrival at the study space.
+                  Your seat <strong>{activeSelectedSeat?.seat_number}</strong> is successfully booked for {activeDate.label} at {activeSlot.label}. You can check in upon arrival at the study space.
                 </p>
                 <div style={{ display: "flex", gap: "12px", justifyContent: "center" }}>
                   <Link href="/bookings" className="btn btn--sun">
@@ -372,7 +415,7 @@ export default function SeatMap({
                 <div className="modal-summary">
                   <div className="modal-summary-row">
                     <span style={{ color: "var(--sage)" }}>Seat</span>
-                    <strong>{selectedSeat?.seat_number} ({selectedSeat?.seat_type || "Standard"})</strong>
+                    <strong>{activeSelectedSeat?.seat_number} ({activeSelectedSeat?.seat_type || "Standard"})</strong>
                   </div>
                   <div className="modal-summary-row">
                     <span style={{ color: "var(--sage)" }}>Date</span>
@@ -394,7 +437,7 @@ export default function SeatMap({
 
                 {bookingError && (
                   <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "12px", background: "color-mix(in oklab, #9a2d22 15%, transparent)", border: "1px solid #9a2d22", color: "#9a2d22", fontSize: "13px", marginBottom: "16px" }}>
-                    <AlertCircle size={16} flex-shrink={0} />
+                    <AlertCircle size={16} />
                     <span>{bookingError}</span>
                   </div>
                 )}

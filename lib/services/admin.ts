@@ -10,26 +10,27 @@ export async function getAdminAnalytics(): Promise<AdminAnalytics> {
       .from("buildings")
       .select("*", { count: "exact", head: true });
 
-    // Spaces count
+    // Spaces count & capacity
     const { data: spacesData } = await supabase
       .from("spaces")
       .select("id, name, capacity");
 
-    const totalSpaces = spacesData?.length || 6;
-    const totalCapacity = spacesData?.reduce((acc, s) => acc + (s.capacity || 0), 0) || 128;
+    const totalBuildings = bCount ?? 0;
+    const totalSpaces = spacesData?.length || 0;
+    const totalCapacity = spacesData?.reduce((acc, s) => acc + (s.capacity || 0), 0) || 0;
 
     // Total seats count
     const { count: sCount } = await supabase
       .from("seats")
       .select("*", { count: "exact", head: true });
 
-    const totalSeats = sCount && sCount > 0 ? sCount : totalCapacity;
+    const totalSeats = (sCount !== null && sCount !== undefined && sCount > 0) ? sCount : totalCapacity;
 
     // Current active bookings
     const nowIso = new Date().toISOString();
     const { data: activeBookings } = await supabase
       .from("bookings")
-      .select("id, status, space_id, seat_id")
+      .select("id, status, space_id, seat_id, start_at, end_at")
       .in("status", ["confirmed", "checked_in"])
       .lte("start_at", nowIso)
       .gte("end_at", nowIso);
@@ -47,7 +48,7 @@ export async function getAdminAnalytics(): Promise<AdminAnalytics> {
       .select("*", { count: "exact", head: true })
       .gte("created_at", todayStart.toISOString());
 
-    // Daily booking trends (last 7 days)
+    // Daily booking trends (last 7 days) from real records
     const dailyTrend = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date();
@@ -73,88 +74,84 @@ export async function getAdminAnalytics(): Promise<AdminAnalytics> {
 
       dailyTrend.push({
         date: dayStr,
-        bookings: dayTotal || Math.floor(Math.random() * 8 + 4),
-        checkIns: dayCheckins || Math.floor(Math.random() * 6 + 2),
+        bookings: dayTotal ?? 0,
+        checkIns: dayCheckins ?? 0,
       });
     }
 
-    // Space utilisation calculation
-    const spaceUtilisation = (spacesData || [
-      { id: "1", name: "Central Library", capacity: 40 },
-      { id: "2", name: "The Quiet Room", capacity: 20 },
-      { id: "3", name: "Collaboration Hub", capacity: 8 },
-      { id: "4", name: "Digital Workspace", capacity: 30 },
-      { id: "5", name: "Open Study Lounge", capacity: 24 },
-      { id: "6", name: "Research Room", capacity: 6 },
-    ]).map((sp) => {
+    // Space utilisation calculation from actual active bookings
+    const spaceUtilisation = (spacesData || []).map((sp) => {
       const spaceActive = activeBookings?.filter((b) => b.space_id === sp.id).length || 0;
       const rate = sp.capacity > 0 ? Math.round((spaceActive / sp.capacity) * 100) : 0;
       return {
         name: sp.name,
         capacity: sp.capacity,
         bookings: spaceActive,
-        utilisationRate: Math.min(100, Math.max(rate, 25)),
+        utilisationRate: Math.min(100, rate),
       };
     });
 
-    const peakOccupancyHours = [
-      { hour: "08:00", activeCount: 14 },
-      { hour: "10:00", activeCount: 42 },
-      { hour: "12:00", activeCount: 68 },
-      { hour: "14:00", activeCount: 84 },
-      { hour: "16:00", activeCount: 79 },
-      { hour: "18:00", activeCount: 55 },
-      { hour: "20:00", activeCount: 31 },
-    ];
+    // Real hourly occupancy distribution for today
+    const hourSlots = ["08:00", "10:00", "12:00", "14:00", "16:00", "18:00", "20:00"];
+    const todayEnd = new Date(todayStart);
+    todayEnd.setHours(23, 59, 59, 999);
+
+    const { data: todayBookings } = await supabase
+      .from("bookings")
+      .select("start_at, end_at, status")
+      .in("status", ["confirmed", "checked_in"])
+      .gte("end_at", todayStart.toISOString())
+      .lte("start_at", todayEnd.toISOString());
+
+    const peakOccupancyHours = hourSlots.map((slot) => {
+      const [h] = slot.split(":").map(Number);
+      const slotTime = new Date(todayStart);
+      slotTime.setHours(h, 0, 0, 0);
+
+      const activeCount = todayBookings?.filter((b) => {
+        const bStart = new Date(b.start_at);
+        const bEnd = new Date(b.end_at);
+        return slotTime >= bStart && slotTime < bEnd;
+      }).length || 0;
+
+      return { hour: slot, activeCount };
+    });
+
+    const weeklyUtilisationRate = totalSeats > 0 ? Math.min(100, Math.round((activeReservations / totalSeats) * 100)) : 0;
 
     return {
-      totalBuildings: bCount || 5,
+      totalBuildings,
       totalSpaces,
       totalSeats,
       currentlyAvailableSeats: currentlyAvailable,
-      currentlyOccupiedSeats: currentlyOccupied || 12,
-      activeReservationsCount: activeReservations || 28,
-      dailyBookingsCount: todayCount || 19,
-      weeklyUtilisationRate: 64,
+      currentlyOccupiedSeats: currentlyOccupied,
+      activeReservationsCount: activeReservations,
+      dailyBookingsCount: todayCount ?? 0,
+      weeklyUtilisationRate,
       dailyTrend,
       spaceUtilisation,
       peakOccupancyHours,
     };
   } catch {
     return {
-      totalBuildings: 5,
-      totalSpaces: 6,
-      totalSeats: 128,
-      currentlyAvailableSeats: 82,
-      currentlyOccupiedSeats: 18,
-      activeReservationsCount: 28,
-      dailyBookingsCount: 19,
-      weeklyUtilisationRate: 62,
-      dailyTrend: [
-        { date: "Mon", bookings: 24, checkIns: 20 },
-        { date: "Tue", bookings: 32, checkIns: 28 },
-        { date: "Wed", bookings: 29, checkIns: 25 },
-        { date: "Thu", bookings: 38, checkIns: 34 },
-        { date: "Fri", bookings: 44, checkIns: 39 },
-        { date: "Sat", bookings: 18, checkIns: 16 },
-        { date: "Sun", bookings: 15, checkIns: 12 },
-      ],
-      spaceUtilisation: [
-        { name: "Central Library", capacity: 40, bookings: 28, utilisationRate: 70 },
-        { name: "The Quiet Room", capacity: 20, bookings: 16, utilisationRate: 80 },
-        { name: "Collaboration Hub", capacity: 8, bookings: 7, utilisationRate: 88 },
-        { name: "Digital Workspace", capacity: 30, bookings: 19, utilisationRate: 63 },
-        { name: "Open Study Lounge", capacity: 24, bookings: 14, utilisationRate: 58 },
-        { name: "Research Room", capacity: 6, bookings: 4, utilisationRate: 67 },
-      ],
+      totalBuildings: 0,
+      totalSpaces: 0,
+      totalSeats: 0,
+      currentlyAvailableSeats: 0,
+      currentlyOccupiedSeats: 0,
+      activeReservationsCount: 0,
+      dailyBookingsCount: 0,
+      weeklyUtilisationRate: 0,
+      dailyTrend: [],
+      spaceUtilisation: [],
       peakOccupancyHours: [
-        { hour: "08:00", activeCount: 14 },
-        { hour: "10:00", activeCount: 42 },
-        { hour: "12:00", activeCount: 68 },
-        { hour: "14:00", activeCount: 84 },
-        { hour: "16:00", activeCount: 79 },
-        { hour: "18:00", activeCount: 55 },
-        { hour: "20:00", activeCount: 31 },
+        { hour: "08:00", activeCount: 0 },
+        { hour: "10:00", activeCount: 0 },
+        { hour: "12:00", activeCount: 0 },
+        { hour: "14:00", activeCount: 0 },
+        { hour: "16:00", activeCount: 0 },
+        { hour: "18:00", activeCount: 0 },
+        { hour: "20:00", activeCount: 0 },
       ],
     };
   }

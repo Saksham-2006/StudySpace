@@ -18,100 +18,6 @@ export type RawSpace = {
   zones?: { id: string; name: string; floor_number: number } | null;
 };
 
-// Seed fallback spaces matching the Ochre visual identity and campus design
-export const FALLBACK_SPACES: StudySpace[] = [
-  {
-    id: "10000000-0000-0000-0000-000000000001",
-    name: "Central Library",
-    space_type: "Library",
-    location: "Academic Block · Ground Floor",
-    description: "A spacious academic environment for focused individual study.",
-    capacity: 40,
-    available_seats_count: 24,
-    total_seats_count: 40,
-    image_url: "https://images.unsplash.com/photo-1507842217343-583bb7270b66",
-    opening_time: "07:00:00",
-    closing_time: "23:00:00",
-    status: "available",
-    facilities: ["Wi-Fi", "Charging", "Silent zone"],
-  },
-  {
-    id: "10000000-0000-0000-0000-000000000002",
-    name: "The Quiet Room",
-    space_type: "Quiet Zone",
-    location: "Library · Second Floor",
-    description: "A peaceful environment for uninterrupted concentration.",
-    capacity: 20,
-    available_seats_count: 13,
-    total_seats_count: 20,
-    image_url: "https://images.unsplash.com/photo-1497366754035-f200968a6e72",
-    opening_time: "08:00:00",
-    closing_time: "22:00:00",
-    status: "available",
-    facilities: ["Wi-Fi", "Silent zone"],
-  },
-  {
-    id: "10000000-0000-0000-0000-000000000003",
-    name: "Collaboration Hub",
-    space_type: "Group Room",
-    location: "Innovation Block · First Floor",
-    description: "A collaborative space for group discussions and projects.",
-    capacity: 8,
-    available_seats_count: 5,
-    total_seats_count: 8,
-    image_url: "https://images.unsplash.com/photo-1497366811353-6870744d04b2",
-    opening_time: "08:00:00",
-    closing_time: "20:00:00",
-    status: "available",
-    facilities: ["Wi-Fi", "Display", "Whiteboard"],
-  },
-  {
-    id: "10000000-0000-0000-0000-000000000004",
-    name: "Digital Workspace",
-    space_type: "Computer Lab",
-    location: "Technology Block · Third Floor",
-    description: "A dedicated workspace equipped for digital learning.",
-    capacity: 30,
-    available_seats_count: 18,
-    total_seats_count: 30,
-    image_url: "https://images.unsplash.com/photo-1498050108023-c5249f4df085",
-    opening_time: "08:00:00",
-    closing_time: "21:00:00",
-    status: "available",
-    facilities: ["Computers", "Wi-Fi", "Charging"],
-  },
-  {
-    id: "10000000-0000-0000-0000-000000000005",
-    name: "Open Study Lounge",
-    space_type: "Individual Desk",
-    location: "Student Centre · First Floor",
-    description: "A comfortable space for independent study and reading.",
-    capacity: 24,
-    available_seats_count: 14,
-    total_seats_count: 24,
-    image_url: "https://images.unsplash.com/photo-1497366216548-37526070297c",
-    opening_time: "06:00:00",
-    closing_time: "23:59:00",
-    status: "available",
-    facilities: ["Wi-Fi", "Charging"],
-  },
-  {
-    id: "10000000-0000-0000-0000-000000000006",
-    name: "Research Room",
-    space_type: "Group Room",
-    location: "Academic Block · Second Floor",
-    description: "A smaller room suited to focused team research sessions.",
-    capacity: 6,
-    available_seats_count: 4,
-    total_seats_count: 6,
-    image_url: "https://images.unsplash.com/photo-1497366754035-f200968a6e72",
-    opening_time: "08:00:00",
-    closing_time: "20:00:00",
-    status: "available",
-    facilities: ["Wi-Fi", "Whiteboard"],
-  },
-];
-
 export async function getBuildings(): Promise<Building[]> {
   try {
     const supabase = await createClient();
@@ -120,24 +26,12 @@ export async function getBuildings(): Promise<Building[]> {
       .select("id, name, description, location")
       .order("name");
 
-    if (error || !data || data.length === 0) {
-      return [
-        { id: "b1", name: "Academic Block", description: "Main academic building", location: "North Campus" },
-        { id: "b2", name: "Library Building", description: "Central repository and study floors", location: "Central Campus" },
-        { id: "b3", name: "Technology Block", description: "Engineering and CS labs", location: "East Campus" },
-        { id: "b4", name: "Student Centre", description: "Student recreation and lounge", location: "South Campus" },
-        { id: "b5", name: "Innovation Block", description: "Research and group spaces", location: "West Campus" },
-      ];
+    if (error || !data) {
+      return [];
     }
     return data;
   } catch {
-    return [
-      { id: "b1", name: "Academic Block", description: "Main academic building", location: "North Campus" },
-      { id: "b2", name: "Library Building", description: "Central repository and study floors", location: "Central Campus" },
-      { id: "b3", name: "Technology Block", description: "Engineering and CS labs", location: "East Campus" },
-      { id: "b4", name: "Student Centre", description: "Student recreation and lounge", location: "South Campus" },
-      { id: "b5", name: "Innovation Block", description: "Research and group spaces", location: "West Campus" },
-    ];
+    return [];
   }
 }
 
@@ -180,7 +74,7 @@ export async function getSpaces(filters?: {
     const { data, error } = await query;
 
     if (error || !data || data.length === 0) {
-      return filterFallbackSpaces(filters);
+      return [];
     }
 
     // Fetch active bookings around now to compute available seats
@@ -240,38 +134,8 @@ export async function getSpaces(filters?: {
 
     return spaces;
   } catch {
-    return filterFallbackSpaces(filters);
+    return [];
   }
-}
-
-function filterFallbackSpaces(filters?: {
-  search?: string;
-  buildingId?: string;
-  spaceType?: string;
-  onlyAvailable?: boolean;
-}): StudySpace[] {
-  let list = [...FALLBACK_SPACES];
-
-  if (filters?.spaceType && filters.spaceType !== "All spaces") {
-    list = list.filter((s) => s.space_type === filters.spaceType);
-  }
-
-  if (filters?.search) {
-    const q = filters.search.toLowerCase();
-    list = list.filter(
-      (s) =>
-        s.name.toLowerCase().includes(q) ||
-        s.space_type.toLowerCase().includes(q) ||
-        (s.description && s.description.toLowerCase().includes(q)) ||
-        (s.location && s.location.toLowerCase().includes(q))
-    );
-  }
-
-  if (filters?.onlyAvailable) {
-    list = list.filter((s) => (s.available_seats_count ?? 0) > 0);
-  }
-
-  return list;
 }
 
 export async function getSpaceById(id: string): Promise<StudySpace | null> {
@@ -299,14 +163,6 @@ export async function getSpaceById(id: string): Promise<StudySpace | null> {
       .single();
 
     if (error || !data) {
-      const fallback = FALLBACK_SPACES.find(
-        (s) => s.id === id || s.id.endsWith(id) || id === "1" || id === "2" || id === "3" || id === "4" || id === "5" || id === "6"
-      );
-      if (fallback) return fallback;
-      const numIdx = parseInt(id, 10);
-      if (!isNaN(numIdx) && numIdx >= 1 && numIdx <= FALLBACK_SPACES.length) {
-        return FALLBACK_SPACES[numIdx - 1];
-      }
       return null;
     }
 
@@ -334,11 +190,7 @@ export async function getSpaceById(id: string): Promise<StudySpace | null> {
       total_seats_count: raw.capacity,
     };
   } catch {
-    const numIdx = parseInt(id, 10);
-    if (!isNaN(numIdx) && numIdx >= 1 && numIdx <= FALLBACK_SPACES.length) {
-      return FALLBACK_SPACES[numIdx - 1];
-    }
-    return FALLBACK_SPACES.find((s) => s.id === id) || null;
+    return null;
   }
 }
 
@@ -356,27 +208,42 @@ export async function getSpaceSeats(
       .eq("space_id", spaceId)
       .order("seat_number");
 
-    let seats: Seat[] = seatsData || [];
-
-    // Fallback if seats table is not populated yet
-    if (error || seats.length === 0) {
-      const space = await getSpaceById(spaceId);
-      const cap = space?.capacity || 20;
-      seats = Array.from({ length: cap }, (_, i) => ({
-        id: `seat-${spaceId}-${i + 1}`,
-        space_id: spaceId,
-        seat_number: `S${String(i + 1).padStart(2, "0")}`,
-        seat_type: i < 4 ? "window" : "standard",
-        status: "available" as const,
-        row_label: String.fromCharCode(65 + Math.floor(i / 6)),
-        column_number: (i % 6) + 1,
-      }));
+    if (error || !seatsData || seatsData.length === 0) {
+      return [];
     }
+
+    const seats: Seat[] = seatsData;
 
     // Check bookings for this seat during the specified time window
     const targetStart = timeWindow?.startAt || new Date().toISOString();
     const targetEnd = timeWindow?.endAt || new Date(Date.now() + 2 * 3600 * 1000).toISOString();
 
+    // Try privacy-safe availability RPC first
+    const { data: rpcData, error: rpcError } = await supabase.rpc("get_seat_availability", {
+      p_space_id: spaceId,
+      p_start_at: targetStart,
+      p_end_at: targetEnd,
+    });
+
+    if (!rpcError && rpcData && Array.isArray(rpcData)) {
+      const rpcMap = new Map<string, { is_reserved: boolean; seat_status: string }>();
+      rpcData.forEach((r: { seat_id: string; is_reserved: boolean; seat_status: string }) => {
+        rpcMap.set(r.seat_id, r);
+      });
+
+      return seats.map((seat) => {
+        const r = rpcMap.get(seat.id);
+        if (seat.status !== "available" || (r && r.seat_status !== "available")) {
+          return { ...seat, computed_state: "unavailable" as const };
+        }
+        if (r && r.is_reserved) {
+          return { ...seat, computed_state: "reserved" as const };
+        }
+        return { ...seat, computed_state: "available" as const };
+      });
+    }
+
+    // Direct booking query fallback for server side
     const { data: bookingsData } = await supabase
       .from("bookings")
       .select("seat_id, status, start_at, end_at")
@@ -406,18 +273,7 @@ export async function getSpaceSeats(
       return { ...seat, computed_state: "available" as const };
     });
   } catch {
-    const space = await getSpaceById(spaceId);
-    const cap = space?.capacity || 20;
-    return Array.from({ length: cap }, (_, i) => ({
-      id: `seat-${spaceId}-${i + 1}`,
-      space_id: spaceId,
-      seat_number: `S${String(i + 1).padStart(2, "0")}`,
-      seat_type: "standard" as const,
-      status: "available" as const,
-      row_label: String.fromCharCode(65 + Math.floor(i / 6)),
-      column_number: (i % 6) + 1,
-      computed_state: i % 3 === 0 ? "reserved" : "available",
-    }));
+    return [];
   }
 }
 
