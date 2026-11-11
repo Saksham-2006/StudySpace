@@ -1,6 +1,38 @@
 import { createClient } from "@/lib/supabase/server";
 import type { Booking, BookingStatus, StudySpace } from "@/lib/types/database";
 
+
+export type SeatAvailability = {
+  seat_id: string;
+  seat_number: string;
+  seat_status: string;
+  is_reserved: boolean;
+};
+
+/** Returns privacy-safe seat availability without exposing other users' booking records. */
+export async function getSeatAvailability(params: {
+  spaceId: string;
+  startAt: string;
+  endAt: string;
+}): Promise<{ success: boolean; seats: SeatAvailability[]; error?: string }> {
+  try {
+    const supabase = await createClient();
+    const { data, error } = await supabase.rpc("get_seat_availability", {
+      p_space_id: params.spaceId,
+      p_start_at: params.startAt,
+      p_end_at: params.endAt,
+    });
+    if (error) return { success: false, seats: [], error: error.message };
+    return { success: true, seats: (data ?? []) as SeatAvailability[] };
+  } catch (err) {
+    return {
+      success: false,
+      seats: [],
+      error: err instanceof Error ? err.message : "Unable to load seat availability.",
+    };
+  }
+}
+
 export async function getUserBookings(userId: string): Promise<Booking[]> {
   try {
     const supabase = await createClient();
