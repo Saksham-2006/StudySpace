@@ -64,9 +64,9 @@ export default function BookingsDashboard({ initialBookings }: BookingsDashboard
 
       const msg =
         action === "check_in"
-          ? "Successfully checked in! Your seat occupancy is recorded."
+          ? "Successfully Checked In! Your seat occupancy is recorded."
           : action === "check_out"
-            ? "Checked out. Thank you for releasing your study seat!"
+            ? "Checked out. Thank you for releasing your Study Seat!"
             : "Reservation cancelled.";
       setMessage({ text: msg, type: "success" });
     } catch (err) {
