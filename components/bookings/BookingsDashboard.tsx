@@ -47,7 +47,7 @@ export default function BookingsDashboard({ initialBookings }: BookingsDashboard
 
       const data = await res.json();
       if (!res.ok) {
-        throw new Error(data.error || "Operation failed.");
+        throw new Error(data.error || "Operation failed. Try again");
       }
 
       // Update state locally
