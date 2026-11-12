@@ -16,7 +16,7 @@ export const spaces: Space[] = [
     id: 1,
     name: "Central Library",
     type: "Library",
-    location: "Academic Block · Ground Floor",
+    location: "Academic Block, Ground Floor",
     description:
       "A spacious academic environment for focused individual study.",
     capacity: 40,
@@ -29,7 +29,7 @@ export const spaces: Space[] = [
     id: 2,
     name: "The Quiet Room",
     type: "Quiet Zone",
-    location: "Library · Second Floor",
+    location: "Library, Second Floor",
     description:
       "A peaceful environment for uninterrupted concentration.",
     capacity: 20,
@@ -68,7 +68,7 @@ export const spaces: Space[] = [
     id: 5,
     name: "Open Study Lounge",
     type: "Individual Desk",
-    location: "Student Centre · First Floor",
+    location: "Student Centre, First Floor",
     description:
       "A comfortable space for independent study and reading.",
     capacity: 24,
@@ -81,7 +81,7 @@ export const spaces: Space[] = [
     id: 6,
     name: "Research Room",
     type: "Group Room",
-    location: "Academic Block · Second Floor",
+    location: "Academic Block, Second Floor",
     description:
       "A smaller room suited to focused team research sessions.",
     capacity: 6,
