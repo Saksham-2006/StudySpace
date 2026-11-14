@@ -40,7 +40,7 @@ export default function AnalyticsDashboard({ analytics }: AnalyticsDashboardProp
 
         <div>
           <span style={{ fontSize: "14px", color: "var(--sage)" }}>
-            Average Weekly Occupancy: <strong>{analytics.weeklyUtilisationRate}%</strong>
+            Average Weekly Occupancy: <bold>{analytics.weeklyUtilisationRate}%</bold>
           </span>
         </div>
       </div>
