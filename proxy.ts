@@ -1,29 +1,28 @@
-import { NextResponse, type NextRequest } from "next/server";
-import { updateSession } from "@/lib/supabase/proxy";
 
-export async function proxy(request: NextRequest) {
-  const response = await updateSession(request);
-  const host = request.headers.get("host") || "";
-  const { pathname } = request.nextUrl;
 
-  // Domain routing for admin application (seat-admin.vercel.app)
-  if (
-    host.includes("seat-admin") &&
-    !pathname.startsWith("/admin") &&
-    !pathname.startsWith("/api") &&
-    !pathname.startsWith("/auth") &&
-    !pathname.startsWith("/_next")
-  ) {
-    const url = request.nextUrl.clone();
-    url.pathname = `/admin${pathname === "/" ? "" : pathname}`;
-    return NextResponse.rewrite(url, { headers: response.headers });
+import { NextRequest, NextResponse } from "next/server";
+import { verifyToken } from "@/lib/auth";
+
+const protectedRoutes = ["/dashboard"];
+const authRoutes = ["/login", "/register"];
+
+export async function proxy(req: NextRequest) {
+  const path = req.nextUrl.pathname;
+  const token = req.cookies.get("auth_token")?.value;
+  const user = token ? await verifyToken(token) : null;
+
+  if (protectedRoutes.some((route) => path.startsWith(route)) && !user) {
+    return NextResponse.redirect(new URL("/login", req.nextUrl));
   }
 
-  return response;
+  if (authRoutes.includes(path) && user) {
+    return NextResponse.redirect(new URL("/dashboard", req.nextUrl));
+  }
+  return NextResponse.next();
 }
 
 export const config = {
-  matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
-  ],
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
 };
+
+
